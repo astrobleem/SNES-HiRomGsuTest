@@ -22,6 +22,7 @@ jobs:
           mkdir -p tools/wla-dx
           cp /tmp/wla-dx/build/binaries/wla-65816 tools/wla-dx/wla-65816
           cp /tmp/wla-dx/build/binaries/wlalink tools/wla-dx/wlalink
+          chmod +x tools/wla-dx/*
 
       - name: Download Bass v18
         run: |
