@@ -35,7 +35,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Build ROM
-        run: make clean && make
+        run: |
+          chmod +x tools/wla-dx/* tools/bass/bass.exe
+          make clean && make
 
       - name: Verify ROM
         run: |
