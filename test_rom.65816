@@ -942,8 +942,7 @@ SetupOBJBase:
     lda #$02
     sta $2101
 
-    ; Upload 576 bytes of solid white 4bpp data to VRAM word $4000
-    ; (covers tiles 0-17 needed for a 16x16 sprite: tiles 0,1,16,17)
+    ; Upload a solid white 4bpp fallback tile to VRAM word $4000
     lda #$80
     sta $2115                   ; VMAIN: increment on high
     rep #$20
@@ -958,7 +957,7 @@ _objTileFill:
     sta $2118                   ; VMDATAL
     sta $2119                   ; VMDATAH → auto-increment
     inx
-    cpx #288                    ; 288 words = 576 bytes = tiles 0-17
+    cpx #16                     ; 16 words = 32 bytes = one 4bpp tile
     bne _objTileFill
 
     ; Load OBJ palette 0 at CGRAM[128] — rainbow
@@ -995,10 +994,9 @@ _objOamClear:
     dex
     bne _objOamClear
 
-    ; 5th table: sprite 0 = LARGE (16x16), rest = small
-    lda #$02                    ; bit 1 = size large for sprite 0
-    sta $2104
-    stz $2104                   ; sprites 1-3: small
+    ; 5th table: all small (8x8), no X MSB
+    stz $2104                   ; sprite 0: small
+    stz $2104
     ldx #15
 _objOam5Clear:
     stz $2104
@@ -1092,10 +1090,9 @@ _dStopped:
     sta $4303                   ; source high → $0C00
     lda #$70
     sta $4304                   ; source bank $70
-    lda #<576                   ; 576 bytes = tiles 0-17 (16x16 sprite)
+    lda #$20                    ; 32 bytes = one 4bpp tile
     sta $4305
-    lda #>576
-    sta $4306
+    stz $4306
     lda #$01
     sta $420B                   ; start DMA ch0
     rts
