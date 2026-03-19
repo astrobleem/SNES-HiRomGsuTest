@@ -4,9 +4,11 @@ A standalone **4 MB** test ROM for validating **HiROM + SuperFX (GSU-2) + MSU-1*
 
 No commercial SNES cartridge ever combined HiROM with SuperFX — all retail SuperFX games used LoROM. This ROM exists because homebrew projects targeting modern flash cartridges (FXPak Pro) can benefit from HiROM's 64KB contiguous banks alongside the GSU-2 coprocessor.
 
-## Screenshot
+## Screenshots
 
-![HiROM+GSU+MSU-1 Test ROM](screenshot.png)
+| Mesen 2 | bsnes v115 |
+|---------|------------|
+| ![Mesen 2](mesen_screenshot.png) | ![bsnes v115](bsnes_screenshot.png) |
 
 9 hardware tests with color-coded results (green=PASS, red=FAIL, yellow=SKIP, cyan=info). The rainbow sprite at bottom-left is rendered by the GSU-2 — 15 colors written to Game Pak RAM by the SuperFX, DMA'd to VRAM, displayed via OAM.
 

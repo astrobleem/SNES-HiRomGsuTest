@@ -5,7 +5,7 @@ game
   title:    HIROM GSU MSU1 TEST
   region:   NTSC
   revision: 1.0
-  board:    GSU-HIROM-RAM
+  board:    HIROM
     memory
       type: ROM
       size: 0x400000
