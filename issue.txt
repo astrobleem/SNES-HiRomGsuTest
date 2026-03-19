@@ -1,0 +1,73 @@
+================================================================================
+Mesen2 GSU Bug #7: Stale ProgramReadBuffer After Branch (CRITICAL)
+================================================================================
+
+File: Core/SNES/Coprocessors/GSU/Gsu.cpp, Exec() postamble
+
+When any branch/jump instruction changes R15 (LOOP, BRA, BEQ, BNE, JMP,
+IWT R15, etc.), ProgramReadBuffer still contains the pre-fetched byte from
+the OLD program counter. The next Exec() cycle returns this stale byte as
+the opcode, causing the WRONG instruction to execute at the branch target.
+
+Example: STB loop with LOOP instruction
+  Expected: LOOP branches to stb_loop -> ALT1 ($3D), STORE R9 ($39)
+  Actual: stale ProgramReadBuffer returns $A0 (IBT R0), which consumes
+          the ALT1 byte as an operand, setting R0=$003D. Next instruction
+          becomes STW R9 (without ALT1) -> writes word $003D as {$00,$3D}.
+  Observed: RAM shows $00 $3D repeating instead of expected $FF bytes.
+
+Affects ALL branch types:
+  - LOOP: modifies R[15] directly
+  - BRA/BEQ/BNE/BGE/BLT/BCC/BCS/BVC/BVS/BPL/BMI: modify R[15] via offset
+  - JMP: modifies R[15] via WriteRegister
+  - IWT R15: modifies R[15] via WriteRegister
+
+Fix applied in Exec() postamble:
+  if(!_r15Changed) {
+      _state.R[15]++;
+  } else {
+      _r15Changed = false;
+      _state.ProgramReadBuffer = ReadProgramByte(ExecOpCode);
+  }
+
+VERIFIED: After fix, STB loop writes correct values. Full GSU sprite scaler
+produces visible scaled Guybrush sprite in SNES Super Monkey Island.
+
+This fix likely also resolves pixel cache Bug A (inter-row flush failure)
+and Bug B (per-pixel color doubling) since those PLOT-based test programs
+use LOOP and BNE branches that were affected by stale prefetch. Re-test
+with the HiRomGsuTest PLOT-based programs to confirm.
+
+================================================================================
+Other Mesen2 GSU Fixes Applied During This Session
+================================================================================
+
+1. Step() uint8_t truncation (Gsu.cpp lines 472, 481):
+   Cast of cycles to uint8_t truncates values >255 in catch-up path.
+   Fix: clamp without truncation.
+
+2. ProcessEndOfFrame() resets hardcoded clock multiplier:
+   When _clockMultiplier is set in constructor, ProcessEndOfFrame reads
+   settings (default 1x) and resets it. Must disable ProcessEndOfFrame
+   for testing with hardcoded multiplier.
+
+3. Clock multiplier 5x hardcoded for GSU scaler testing (constructor).
+
+================================================================================
+FXPak Pro: GSU Not Enabled for HiROM Carts
+================================================================================
+
+Firmware only enables GSU for LoROM (header->map == 0x20).
+One-line fix in sd2snes src/smc.c:
+  if ((header->map == 0x20 || header->map == 0x21) && ...
+
+================================================================================
+bsnes v115: Frame 193 IRQ Crash (UNRESOLVED)
+================================================================================
+
+Crashes with E_BadIrqCallback regardless of manifest configuration.
+Not GSU-related (same crash without GSU). ROM data at $C0:30C8 is correct
+($DEAD magic). Root cause unknown -- possibly bsnes IRQ timing issue.
+
+Added sidecar .bml manifest support to bsnes-test (testrunner.cpp).
+================================================================================
