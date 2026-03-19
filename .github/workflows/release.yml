@@ -23,12 +23,15 @@ jobs:
           cp /tmp/wla-dx/build/binaries/wla-65816 tools/wla-dx/wla-65816
           cp /tmp/wla-dx/build/binaries/wlalink tools/wla-dx/wlalink
 
-      - name: Build Bass v18
+      - name: Download Bass v18
         run: |
-          git clone --depth 1 https://github.com/ARM9/bass.git /tmp/bass
-          cd /tmp/bass/bass && make -j$(nproc)
           mkdir -p tools/bass
-          cp /tmp/bass/bass/bass tools/bass/bass.exe
+          gh release download v18 --repo ARM9/bass --pattern bass-ubuntu.zip --dir /tmp
+          unzip /tmp/bass-ubuntu.zip -d /tmp/bass-release
+          cp /tmp/bass-release/bass tools/bass/bass.exe
+          chmod +x tools/bass/bass.exe
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Build ROM
         run: make clean && make
