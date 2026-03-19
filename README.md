@@ -4,29 +4,11 @@ A standalone **4 MB** test ROM for validating **HiROM + SuperFX (GSU-2) + MSU-1*
 
 No commercial SNES cartridge ever combined HiROM with SuperFX — all retail SuperFX games used LoROM. This ROM exists because homebrew projects targeting modern flash cartridges (FXPak Pro) can benefit from HiROM's 64KB contiguous banks alongside the GSU-2 coprocessor.
 
-## Display
+## Screenshot
 
-```
-  HiROM+GSU+MSU-1 TEST ROM  v1.1
-  ==============================
+![HiROM+GSU+MSU-1 Test ROM](screenshot.png)
 
-  HiROM Mapping    : PASS
-  ROM Banks        : 62/62 PASS
-  WRAM Read/Write  : PASS
-  GSU-2 VCR        : $04 PASS
-  GSU SRAM R/W     : PASS
-  GSU Execute      : PASS
-  Game Pak RAM     : 8KB
-  MSU-1 Detect     : FOUND
-  MSU-1 Status     : $01
-
-  CPU: 3.58MHz  GSU: 21.4MHz
-  ROM: 4096KB  SRAM: 8KB
-  Board: SHVC-1CD0N7S-01
-  Serial: SHVC-TEST
-```
-
-A GSU-rendered rainbow sprite appears at the bottom — 15 colors written to Game Pak RAM by the SuperFX, DMA'd to VRAM, displayed via OAM.
+9 hardware tests with color-coded results (green=PASS, red=FAIL, yellow=SKIP, cyan=info). The rainbow sprite at bottom-left is rendered by the GSU-2 — 15 colors written to Game Pak RAM by the SuperFX, DMA'd to VRAM, displayed via OAM.
 
 ## Tests
 
