@@ -1,5 +1,0 @@
-PPM_START
-P6 256 224 255
-testrunner/MesenCore.so
-HeadlessRunTest(rom=/mnt/e/gh/SNES-SuperMonkeyIsland/distribution/HiRomGsuTest.sfc, timeout=60)
-Result: -1
