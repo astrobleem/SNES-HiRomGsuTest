@@ -1,0 +1,481 @@
+================================================================================
+BUG REPORT: Mesen2 GSU Pixel Cache — Multi-Row Flush Failure & Per-Pixel COLOR
+================================================================================
+
+Emulator:    Mesen2 (patched MesenCore.so with HiROM+GSU support)
+Component:   GSU-2 (SuperFX 2) coprocessor — pixel cache subsystem
+Severity:    Major — prevents GSU programs from rendering multi-row or
+             multi-color tile output via the PLOT pipeline
+Filed:       2026-03-18
+Test ROM:    SNES-HiRomGsuTest (HiRomGsuTest.sfc, 4MB HiROM+GSU+MSU-1)
+
+================================================================================
+SUMMARY
+================================================================================
+
+Two related bugs in Mesen2's GSU pixel cache emulation prevent correct rendering
+of multi-row tiles and per-pixel color changes via the PLOT instruction:
+
+  Bug A: Pixel cache does NOT flush to RAM when the Y coordinate changes
+         between PLOT calls. Only the final cache line (flushed by STOP)
+         survives. Rows 1-7 of an 8x8 tile are lost.
+
+  Bug B: Changing COLR via the COLOR instruction between PLOT calls within
+         the same 8-pixel cache line produces incorrect color associations.
+         Colors are doubled (1,3,5,7,9,11,13,15 instead of 1,2,3,4,5,6,7,8).
+
+A single-color PLOT program (pixel_test.gsu) works correctly, confirming that
+basic PLOT + STOP cache flush works. The bugs manifest only when:
+  - Multiple tile rows are rendered (Bug A)
+  - COLOR is changed between PLOT calls in the same row (Bug B)
+
+================================================================================
+HARDWARE SPECIFICATION (from fullsnes.txt)
+================================================================================
+
+The GSU pixel cache is a two-level write buffer between the PLOT instruction
+and Game Pak RAM:
+
+  ┌──────────────┐     ┌────────────────┐     ┌─────────┐
+  │ PLOT instr   │────>│ Primary Cache   │────>│ Secondary│────> RAM
+  │ (R1,R2,COLR) │     │ 8 pixels+flags  │     │ Cache    │
+  └──────────────┘     └────────────────┘     └─────────┘
+
+Primary Cache:
+  - Holds 8 pixels and 8 flags for one tile-row
+  - Pixel position keyed by (R1 AND $F8, R2 AND $FF)
+  - PLOT writes pixel data + sets corresponding flag
+
+Secondary Cache:
+  - Receives data from Primary when Primary needs to service a new tile-row
+  - Flushes to RAM before accepting new data from Primary
+  - If fewer than 8 flags are set, performs read-modify-write merge with RAM
+
+Cache Eviction Triggers (per hardware spec):
+  1. PLOT to a different tile-row: (R1 AND $F8) or R2 changes
+     → Primary → Secondary → RAM (eviction chain)
+  2. All 8 Primary flags set (cache full)
+     → Primary → Secondary → RAM
+  3. RPIX instruction: forces both caches to RAM (blocking)
+  4. STOP instruction: should flush remaining cache to RAM
+
+COLOR Instruction:
+  - Sets the 8-bit COLR register from R[SREG]
+  - 1 cycle, immediate effect
+  - Subsequent PLOT calls use the new COLR value
+  - Color depth (2/4/8 bpp) determined by SCMR register
+
+PLOT Instruction:
+  - Writes pixel at (R1, R2) using current COLR value
+  - Writes to Primary Cache (NOT directly to RAM)
+  - Auto-increments R1
+  - 1-48 cycles (variable, depends on cache eviction)
+
+================================================================================
+BUG A: INTER-ROW PIXEL CACHE FLUSH FAILURE
+================================================================================
+
+Symptom:
+  A GSU program that PLOTs pixels across 8 rows (Y=0 through Y=7) of a single
+  8x8 tile produces output where ONLY row 0 contains pixel data. Rows 1-7 are
+  all zeros in RAM.
+
+Expected behavior:
+  When PLOT advances from Y=0 to Y=1 (via `moves r2, r4` with R4 incremented),
+  the tile-row key changes. Per the hardware spec, this should trigger the
+  eviction chain: Primary (row 0 data) → Secondary → RAM. The Primary cache
+  then starts accumulating row 1 data. At STOP, the final row's data flushes.
+  All 8 rows should be in RAM.
+
+Observed behavior:
+  Only the data for the LAST row plotted (row 0, which is the last cache
+  evicted by STOP) appears in RAM. All intermediate rows (1-7) are zero.
+
+  This indicates the eviction chain triggered by Y-coordinate changes
+  (Primary → Secondary → RAM) is not executing. Either:
+    a) The Primary-to-Secondary transfer occurs but Secondary never writes RAM
+    b) The tile-row change is not detected (cache key comparison bug)
+    c) The eviction is deferred and never completes
+
+Test program (gsu_demo.gsu, PLOT-based version):
+
+    cache
+    ibt r3, #15            ; mod constant
+    ibt r4, #0             ; Y = 0
+    ibt r5, #8             ; Y limit
+
+  row_loop:
+    moves r2, r4           ; R2 = Y
+    ibt r1, #0             ; R1 = X = 0
+    ibt r7, #0             ; X counter
+    ibt r12, #8            ; 8 pixels/row
+    moves r13, r15         ; loop target
+
+  pixel_loop:
+    from r7
+    add r4                 ; R0 = X + Y
+    inc r0                 ; R0 = X + Y + 1 (colors 1-15)
+    color                  ; COLR = R0
+    plot                   ; plot at (R1,R2), R1++
+    inc r7
+    loop                   ; R12--, branch if != 0
+
+    inc r4                 ; Y++
+    from r4
+    cmp r5                 ; compare Y with 8
+    bne row_loop
+
+    stop
+    nop
+
+VRAM tile dump after DMA from $70:0C00 (32 bytes, 4bpp OBJ format):
+
+  Bytes 0-15  (BP0/BP1 rows 0-7): FF 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  Bytes 16-31 (BP2/BP3 rows 0-7): 33 0F 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+  Row 0: has data (BP0=$FF, BP1=$55, BP2=$33, BP3=$0F)
+  Rows 1-7: ALL ZEROS — pixel data never reached RAM
+
+Context:
+  - SCBR = $03 (screen base at $70:0C00)
+  - SCMR = $2D (16-color OBJ mode, RAN set)
+  - PBR = $70 (executing from Game Pak RAM)
+  - CLSR = $01 (21.4MHz)
+  - SFR.GO clears after execution (STOP executes successfully)
+  - Previously fixed Bug #5 (STOP pixel cache flush) is confirmed working
+    — that's why row 0 data exists at all
+
+Workaround attempted:
+  Added a "dummy PLOT" at (248, Y) after each row to force Primary cache
+  eviction by changing the tile. This did NOT fix the issue — intermediate
+  row data still did not appear in RAM. The eviction chain appears to be
+  fundamentally broken for multi-row rendering.
+
+Workaround used:
+  Bypass the pixel cache entirely by writing pre-computed 4bpp tile data
+  directly to RAM using STW (store word) instructions. This produces correct
+  output but does not exercise the PLOT/COLOR pipeline.
+
+================================================================================
+BUG B: PER-PIXEL COLOR WITHIN A CACHE LINE
+================================================================================
+
+Symptom:
+  When COLOR is called before each PLOT within a single 8-pixel row,
+  the resulting pixel colors do not match the COLR values set.
+
+Expected row 0 colors (from program logic):
+  X=0: color 1, X=1: color 2, X=2: color 3, X=3: color 4,
+  X=4: color 5, X=5: color 6, X=6: color 7, X=7: color 8
+
+Observed row 0 colors (decoded from VRAM bitplane data):
+  X=0: color 1, X=1: color 3, X=2: color 5, X=3: color 7,
+  X=4: color 9, X=5: color 11, X=6: color 13, X=7: color 15
+
+  Pattern: observed[X] = 2*X + 1 (incrementing by 2 instead of 1)
+  The colors are systematically doubled.
+
+Analysis:
+  The pixel_test program (which uses a SINGLE color for all pixels) renders
+  correctly. The bug only manifests when COLOR is changed between PLOT calls
+  within the same 8-pixel Primary Cache line.
+
+  Possible root cause: The Primary Cache may be using a shared COLR value
+  for all 8 pixels in the cache line (snapshotting at flush time) rather than
+  storing per-pixel color values as the hardware spec requires. Alternatively,
+  the COLOR instruction may have a timing interaction with the cache that
+  causes every other color update to be lost.
+
+  The exact mechanism is unclear without source-level debugging of Mesen's
+  Gsu.Instructions.cpp. The observed 2x color scaling pattern suggests
+  either:
+    a) COLOR updates COLR but the cache reads it with a one-pixel delay
+    b) The cache indexes pixels by (R1 AND $F8) which groups incorrectly
+    c) An internal counter or flag is miscounted during COLOR+PLOT sequences
+
+================================================================================
+COMPARISON: WORKING vs BROKEN
+================================================================================
+
+Working (pixel_test.gsu — constant color):
+  - Sets COLOR once (color 5)
+  - PLOTs 64 pixels (8x8) with same color
+  - SFR.GO clears ✓
+  - All 8 rows of tile data correct in RAM ✓
+
+  Wait — actually this needs verification. The GSU Execute test (Test 6)
+  only checks SFR.GO, not the tile output. The pixel_test tile data was
+  never independently verified for all 8 rows. It's possible pixel_test
+  ALSO only has row 0 data, but since all pixels are the same color,
+  we wouldn't notice from the SFR.GO test alone.
+
+  If pixel_test also loses rows 1-7, then Bug A affects ALL multi-row PLOT
+  programs, not just ones with per-pixel COLOR changes.
+
+Broken (gsu_demo.gsu — per-pixel color):
+  - Changes COLOR before each PLOT
+  - PLOTs 64 pixels (8x8)
+  - SFR.GO clears ✓
+  - Only row 0 in RAM ✗
+  - Row 0 colors are wrong (2x pattern) ✗
+
+================================================================================
+AFFECTED MESEN SOURCE FILES (probable)
+================================================================================
+
+  Core/SNES/Coprocessors/GSU/Gsu.Instructions.cpp
+    - PLOT instruction handler: pixel cache write logic
+    - COLOR instruction handler: COLR register update
+    - STOP instruction handler: cache flush (Bug #5 fix is here)
+
+  Core/SNES/Coprocessors/GSU/GsuPixelCache.cpp (or equivalent)
+    - Primary/Secondary cache management
+    - Cache eviction trigger on tile-row change
+    - Cache-to-RAM write (flush) logic
+
+  Core/SNES/Coprocessors/GSU/Gsu.cpp
+    - Run() loop: cycle-accurate execution
+    - R1/R2 write handlers: should trigger cache key comparison
+
+================================================================================
+PRIOR GSU BUGS FOUND AND FIXED IN MESEN2
+================================================================================
+
+For context, five GSU emulation bugs were previously found and fixed during
+the SNES Super Monkey Island project (2025-2026):
+
+  #1 Stale instruction cache on restart
+     → memset(_cacheValid, 0) on R15_HI write
+
+  #2 Stale wait flags after STOP
+     → Clear _waitForRomAccess, _waitForRamAccess, etc. on restart
+
+  #3 CycleCount exceeds master clock
+     → Clamp CycleCount on R15_HI write
+
+  #4 R14 ROM prefetch stalls RAM-based programs
+     → Skip ROM stall when ProgramBank > $5F (partial fix)
+
+  #5 STOP doesn't flush pixel caches
+     → Added WritePixelCache(secondary/primary) before STOP state change
+
+Bug #5 is directly related to Bug A in this report. The STOP flush fix
+ensures the LAST cache line is written to RAM. But the INTERMEDIATE cache
+line flushes (triggered by Y-coordinate changes during multi-row PLOT
+sequences) remain broken.
+
+================================================================================
+REPRODUCTION
+================================================================================
+
+1. Build the test ROM:
+     wsl -e bash -lc "cd /path/to/SNES-HiRomGsuTest && make"
+
+2. Run in Mesen2 (patched) or testrunner:
+     The GSU demo sprite at the bottom of the screen should display
+     an 8x8 diagonal rainbow gradient. With these bugs, only 1 row
+     will have color data (or the tile will appear as a single
+     horizontal line of rainbow pixels).
+
+3. Verify via VRAM inspection:
+     Read 32 bytes at VRAM byte address $8000 (word $4000, OBJ tile 0).
+     Expected: all 32 bytes have computed bitplane data.
+     Observed: only bytes 0-1 and 16-17 (row 0 bitplanes) are non-zero.
+
+================================================================================
+RECOMMENDED INVESTIGATION
+================================================================================
+
+1. Set a breakpoint in Mesen's PLOT handler when the cache key changes
+   (R2 value differs from the cached Y). Verify the eviction chain fires:
+   Primary → Secondary write pending → Secondary flush to RAM → Primary reset.
+
+2. Check if WritePixelCache() is called during tile-row transitions
+   (not just at STOP). The Secondary cache flush may be deferred
+   indefinitely.
+
+3. For Bug B, inspect how COLR is stored in the Primary Cache. The spec
+   says each pixel should capture the COLR value at PLOT time. If the
+   cache stores a shared color reference instead of per-pixel values,
+   only the last COLR before flush would be applied to all 8 pixels.
+
+4. Test with bsnes-plus (which has a separate GSU implementation with
+   a SuperFX debugger) to establish ground truth for the expected
+   pixel cache behavior.
+
+================================================================================
+FXPAK PRO: GSU NOT ENABLED FOR HiROM CARTS
+================================================================================
+
+When running HiRomGsuTest.sfc on real hardware via FXPak Pro (firmware v1.11.0),
+the GSU-2 is NOT detected (VCR = $00). All GSU tests show FAIL/SKIPPED.
+
+Root cause: the FXPak firmware (sd2snes) hardcodes SuperFX detection to LoROM:
+
+  Source: https://github.com/mrehkopf/sd2snes/blob/master/src/smc.c
+
+  if (header->map == 0x20 && ((header->carttype >= 0x13
+       && header->carttype <= 0x15) || header->carttype == 0x1a)) {
+      props->has_gsu = 1;
+      props->fpga_conf = FPGA_GSU;
+
+The mapping byte is checked AFTER masking with 0xEF (strips FastROM bit):
+
+  switch(header->map & 0xef) {
+      case 0x20: /* LoROM */  ...
+      case 0x21: /* HiROM */  ...
+
+Our ROM has mapping = $31. After mask: $31 & $EF = $21 (HiROM).
+The GSU detection requires map == $20 (LoROM). HiROM ($21) is rejected.
+
+No commercial SNES cartridge ever combined HiROM with SuperFX, so the firmware
+never needed to handle this case. Every retail SuperFX game uses LoROM ($20).
+
+FXPak diagnostic dump (via QUsb2Snes):
+
+  ROM Header:      mapping=$31 carttype=$15 — correctly loaded as HiROM
+  Bank Signatures: 62/62 OK — full 4MB ROM mapping works
+  MSU-1:           detected (status=$C2) — MSU-1 works
+  GSU Registers:   $3030-$303F all zeros — FPGA GSU core NOT loaded
+  SRAM at $70:     $FF (uninitialized) — SRAM mapped but never written
+  Firmware:        v1.11.0, features: FEAT_MSU1, FEAT_213F, FEAT_DMA1
+                   (no GSU/SuperFX feature listed)
+
+Proposed firmware fix (one-line change in src/smc.c):
+
+  // Current — LoROM only:
+  if (header->map == 0x20 && ((header->carttype >= 0x13 ...
+
+  // Fixed — LoROM + HiROM:
+  if ((header->map == 0x20 || header->map == 0x21) && ((header->carttype >= 0x13 ...
+
+This would enable the GSU FPGA core for HiROM+GSU ROMs while preserving all
+existing LoROM+GSU behavior. The GSU FPGA core itself should work with HiROM
+since the GSU operates independently of the SNES memory mapping mode — it
+accesses ROM via its own ROMBR register and RAM via $70-$71.
+
+================================================================================
+WORKAROUND USED IN FINAL ROM
+================================================================================
+
+The shipping test ROM bypasses the pixel cache entirely for the GSU demo:
+
+  1. gsu_demo.gsu uses STW (store word) to write pre-computed 4bpp tile data
+     directly to Game Pak RAM, skipping the PLOT/COLOR pipeline.
+
+  2. The 65816 host code (SetupOBJBase) first writes a fallback solid-white
+     tile via CPU to the OBJ VRAM area. If the GSU is present, RunGSUDemo
+     overwrites it with the GSU-rendered rainbow tile via DMA.
+
+  3. The OBJ sprite displays correctly using this path, confirming the full
+     GSU → RAM → DMA → VRAM → OAM → screen pipeline works.
+
+Note: During development, an additional bug (our own, not Mesen's) was found
+where OBJSEL was set to $01 (OBJ base at byte $4000 = word $2000) while the
+tile DMA targeted VRAM word $4000 (byte $8000). The fix was OBJSEL = $02
+(base at byte $8000 = word $4000), matching the DMA target. The OBJSEL Name
+Base Address field uses $4000-BYTE steps, not word steps.
+
+================================================================================
+
+================================================================================
+FINDINGS FROM MONKEY ISLAND GSU SCALER INTEGRATION (2026-03-18)
+================================================================================
+
+During integration of the GSU-2 sprite scaler into SNES Super Monkey Island,
+the following issues were discovered and (partially) resolved:
+
+--- Mesen2 Step() uint8_t Truncation Bug ---
+
+File: Core/SNES/Coprocessors/GSU/Gsu.cpp, lines 472 and 481
+
+The Step() function's delay decrements truncate the `cycles` parameter to
+uint8_t before comparing with RomDelay/RamDelay:
+
+  _state.RomDelay -= std::min<uint8_t>((uint8_t)cycles, _state.RomDelay);
+
+The `cycles` parameter is uint64_t. The (uint8_t) cast truncates values >255.
+This is called from Run()'s catch-up path with `targetCycle - CycleCount`
+which can be thousands at higher clock multipliers. Fix applied:
+
+  uint8_t romDec = (cycles >= _state.RomDelay) ? _state.RomDelay : (uint8_t)cycles;
+  _state.RomDelay -= romDec;
+
+(Same pattern for RamDelay.)
+
+--- Mesen2 ProcessEndOfFrame() Resets Clock Multiplier ---
+
+File: Core/SNES/Coprocessors/GSU/Gsu.cpp, ProcessEndOfFrame()
+
+When _clockMultiplier is hardcoded in the constructor for testing (e.g. 5x),
+ProcessEndOfFrame() reads the settings (default 100% = 1x), sees a mismatch,
+and resets _clockMultiplier back to 1 on the first frame. This nullifies any
+constructor-based clock override. To test with a fixed multiplier, BOTH the
+constructor AND ProcessEndOfFrame must be modified.
+
+--- Mesen2 GSU Scaler Timing: Poll Loop Budget ---
+
+At 1x clock, the 65816 poll loop ($FFFF iterations, ~20 cycles/iteration =
+~1.3M master clocks) gives the GSU ~1.3M cycles. The Monkey Island scaler
+needs ~54K cycles for a 16x30 sprite, but only completed ~19/30 rows at 5x
+clock (with ProcessEndOfFrame accidentally reducing CycleCount each frame).
+
+At 20x with ProcessEndOfFrame disabled, only 6/30 rows completed. The GSU
+gets the budget but PLOT-based rendering added massive overhead from pixel
+cache management. With STW-based direct writes (bypassing pixel cache), the
+timing should be far better.
+
+Extended the 65816 poll loop to 32 * $FFFF iterations for testing.
+
+--- bass Assembler: LMS/SMS Operand Convention ---
+
+bass v18 treats LMS/SMS operands as BYTE addresses and auto-divides by 2 for
+the hardware encoding. So `lms r0, ($02)` assembles operand $01, reading from
+byte address $02. This is CORRECT -- do NOT halve the operands manually.
+
+Verified by dumping assembled bytes: `lms r0, ($01)` produces operand $00
+(integer division $01/2 = 0), reading from byte address $00. This confirmed
+bass does the division automatically.
+
+--- STW-Based Scaler (Pixel Cache Bypass) ---
+
+Rewrote sprite_scaler.gsu to use LDB/STB read-modify-write instead of
+PLOT/COLOR. For each non-transparent output pixel:
+  1. Compute output tile address:
+     $0C00 + (outY>>3)*512 + (outX>>3)*32 + (outY&7)*2
+  2. For each set bit in the 4-bit color, read the bitplane byte, OR with
+     output bitmask, write back
+  3. Bitplane offsets within tile: +0 (bp0), +1 (bp1), +16 (bp2), +17 (bp3)
+
+Output area is pre-zeroed by the 65816 launcher, so only OR operations needed.
+Verified: GSU RAM at $0C00 shows pixel data after scaler completes.
+
+Binary size: 326 bytes (within 512-byte instruction cache).
+
+--- bsnes v115 Frame 193 Crash (UNRESOLVED) ---
+
+bsnes-test crashes at frame 193 with E_BadIrqCallback regardless of manifest
+configuration (tested with GSU-HIROM-RAM, HIROM+GSU, HIROM-only, and no-GSU).
+The crash is NOT caused by GSU bus contention:
+  - bsnes CPUROM::read() checks sfr.g AND scmr.ron; our code sets RAN not RON
+  - ROM at $C0:30C8 correctly contains $DEAD (IRQ_MAGIC) when read at frame 192
+  - Same crash occurs with PPU/Fast=false and Coprocessor/DelayedSync=false
+
+Root cause: bsnes-test generates manifests from ROM header heuristics, ignoring
+any sidecar .bml file. Header byte $FFD6=$15 (SuperFX+RAM+Battery) causes
+auto-detection as GSU-HIROM-RAM board. Added sidecar manifest support to
+bsnes-test (checks for .bml next to ROM, uses it if found), but crash persists.
+
+The crash appears to be a fundamental bsnes v115 timing issue with the IRQ
+handler reading ROM via `lda.l $C00000,x`. Not yet resolved.
+
+--- Remaining Work ---
+
+1. OAM grid renderer (_ri.scaledOamGrid) produces wrong sprite positions/tiles
+   -- was already flagged as needing fixes before the scaler was disabled.
+2. Pixel cache bugs A & B still present in Mesen (only affects PLOT path).
+3. FXPak Pro firmware needs one-line patch for HiROM+GSU detection.
+4. bsnes frame 193 crash needs deeper investigation (possibly bsnes-specific
+   IRQ timing during coprocessor sync).
+
+================================================================================

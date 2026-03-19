@@ -1,0 +1,51 @@
+// GSU-2 Rainbow Demo — 16x16 diagonal gradient via PLOT pipeline
+//
+// Each pixel color = ((X + Y) mod 15) + 1, producing diagonal rainbow stripes.
+// Demonstrates GSU hardware pixel cache, per-pixel color register, and
+// multi-tile OBJ-mode output.
+//
+// Executes from Game Pak RAM at $70:0100
+// Output: 4 tiles (16x16) in OBJ format at screen base (SCBR * $400)
+
+arch snes.gsu
+base $000100
+
+    cache
+
+    ibt r3, #15                 // R3 = 15 (mod constant)
+    ibt r4, #0                  // R4 = Y counter
+    ibt r5, #16                 // R5 = 16 (Y limit)
+
+row_loop:
+    moves r2, r4                // R2 = Y
+    ibt r1, #0                  // R1 = X = 0 (PLOT auto-increments)
+    ibt r7, #0                  // R7 = X counter for color calc
+    ibt r12, #16                // 16 pixels per row
+    moves r13, r15              // R13 = loop target
+
+pixel_loop:
+    // color = ((X + Y) mod 15) + 1
+    from r7
+    add r4                      // R0 = X + Y (0..30)
+sub_loop:
+    from r0
+    cmp r3                      // compare with 15
+    blt no_sub
+    from r0
+    sub r3                      // R0 -= 15
+    bra sub_loop
+no_sub:
+    inc r0                      // R0 = (X+Y)%15 + 1
+    color                       // COLR = R0
+    plot                        // plot at (R1, R2), R1++
+    inc r7
+    loop
+
+    // Next row
+    inc r4
+    from r4
+    cmp r5
+    bne row_loop
+
+    stop
+    nop
