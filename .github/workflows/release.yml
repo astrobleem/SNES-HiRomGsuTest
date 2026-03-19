@@ -13,84 +13,40 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
 
-      - name: Build WLA-DX from source
+      - name: Build WLA-DX v9.12
         run: |
-          git clone --depth 1 --branch v9.3 https://github.com/vhelin/wla-dx.git /tmp/wla-dx
-          cd /tmp/wla-dx
-          mkdir build && cd build
-          cmake ..
-          make -j$(nproc)
-          sudo cp binaries/wla-65816 /usr/local/bin/
-          sudo cp binaries/wlalink /usr/local/bin/
+          git clone --depth 1 --branch v9.12 https://github.com/vhelin/wla-dx.git /tmp/wla-dx
+          cd /tmp/wla-dx && mkdir build && cd build && cmake .. && make -j$(nproc)
+          cp /tmp/wla-dx/build/binaries/wla-65816 tools/wla-dx/wla-65816
+          cp /tmp/wla-dx/build/binaries/wlalink tools/wla-dx/wlalink
 
-      - name: Build Bass from source
+      - name: Build Bass v18
         run: |
           git clone --depth 1 https://github.com/ARM9/bass.git /tmp/bass
-          cd /tmp/bass/bass
-          make -j$(nproc)
-          sudo cp bass /usr/local/bin/
-
-      - name: Copy Bass architecture files
-        run: |
-          sudo mkdir -p /usr/local/bin/architectures
-          sudo cp tools/bass/architectures/*.arch /usr/local/bin/architectures/
+          cd /tmp/bass/bass && make -j$(nproc)
+          cp /tmp/bass/bass/bass tools/bass/bass.exe
 
       - name: Build ROM
-        run: |
-          cat > makefile.ci <<'EOF'
-          ASM     := wla-65816
-          LINK    := wlalink
-          BASS    := bass
-          PYTHON  := python3
-          ROM     := build/HiRomGsuTest.sfc
-          MSU     := build/HiRomGsuTest.msu
-          OBJ     := build/test_rom.o
-          GSU_BIN := build/pixel_test.bin
-          GSU_DEMO := build/gsu_demo.bin
-          FONT    := build/font.bin
-          .PHONY: all
-          all: $(ROM) $(MSU)
-          build:
-          	mkdir -p build
-          $(FONT): gen_font.py | build
-          	$(PYTHON) gen_font.py $@
-          $(GSU_BIN): pixel_test.gsu | build
-          	$(BASS) -strict -o $@ $<
-          $(GSU_DEMO): gsu_demo.gsu | build
-          	$(BASS) -strict -o $@ $<
-          $(OBJ): test_rom.65816 test_rom.h $(GSU_BIN) $(GSU_DEMO) $(FONT) | build
-          	$(ASM) -o $< $@
-          $(ROM): $(OBJ) linkfile.lnk inject_signatures.py
-          	$(LINK) -dsr linkfile.lnk $@
-          	$(PYTHON) inject_signatures.py $@
-          $(MSU): | build
-          	$(PYTHON) -c "open('$@','wb').write(bytes(4096))"
-          EOF
-          make -f makefile.ci
+        run: make clean && make
 
       - name: Verify ROM
         run: |
-          ls -la build/HiRomGsuTest.sfc
+          ls -la build/HiRomGsuTest.sfc build/HiRomGsuTest.msu
           python3 -c "
           data = open('build/HiRomGsuTest.sfc','rb').read()
           assert len(data) == 4194304, f'Wrong size: {len(data)}'
-          title = data[0xFFC0:0xFFC0+21].decode('ascii')
-          print(f'Title: {title}')
-          print(f'Mapping: \${data[0xFFD5]:02X}')
-          print(f'CartType: \${data[0xFFD6]:02X}')
+          print(f'Size: {len(data)} bytes')
+          print(f'Title: {data[0xFFC0:0xFFD5].decode(\"ascii\")}')
+          print(f'Mapping: 0x{data[0xFFD5]:02X}')
           print('ROM OK')
           "
 
       - name: Create release archive
         run: |
           mkdir -p release
-          cp build/HiRomGsuTest.sfc release/
-          cp build/HiRomGsuTest.msu release/
-          cp hirom_gsu_test.bml release/
+          cp build/HiRomGsuTest.sfc build/HiRomGsuTest.msu hirom_gsu_test.bml release/
           cd release && zip ../HiRomGsuTest-${{ github.ref_name }}.zip *
 
       - name: Create GitHub Release
@@ -104,12 +60,4 @@ jobs:
 
             4 MB standalone SNES test ROM for validating HiROM + SuperFX (GSU-2) + MSU-1.
 
-            ### Quick Start
-            1. Download `HiRomGsuTest-${{ github.ref_name }}.zip`
-            2. Extract — contains `.sfc`, `.msu`, and `.bml` files
-            3. Load in your emulator or copy to FXPak Pro SD card
-
-            ### Files
-            - `HiRomGsuTest.sfc` — 4 MB ROM
-            - `HiRomGsuTest.msu` — MSU-1 companion data (place alongside ROM)
-            - `hirom_gsu_test.bml` — bsnes manifest (optional)
+            **Download `HiRomGsuTest-${{ github.ref_name }}.zip`** — contains `.sfc`, `.msu`, and `.bml` files. Place all three in the same directory.
