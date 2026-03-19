@@ -19,6 +19,7 @@ jobs:
         run: |
           git clone --depth 1 --branch v9.12 https://github.com/vhelin/wla-dx.git /tmp/wla-dx
           cd /tmp/wla-dx && mkdir build && cd build && cmake .. && make -j$(nproc)
+          mkdir -p tools/wla-dx
           cp /tmp/wla-dx/build/binaries/wla-65816 tools/wla-dx/wla-65816
           cp /tmp/wla-dx/build/binaries/wlalink tools/wla-dx/wlalink
 
@@ -26,6 +27,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/ARM9/bass.git /tmp/bass
           cd /tmp/bass/bass && make -j$(nproc)
+          mkdir -p tools/bass
           cp /tmp/bass/bass/bass tools/bass/bass.exe
 
       - name: Build ROM
