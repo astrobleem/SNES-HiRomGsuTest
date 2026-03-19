@@ -6,9 +6,10 @@ PYTHON  := python3
 ROM     := build/HiRomGsuTest.sfc
 MSU     := build/HiRomGsuTest.msu
 OBJ     := build/test_rom.o
-GSU_BIN  := build/pixel_test.bin
-GSU_DEMO := build/gsu_demo.bin
-FONT     := build/font.bin
+GSU_BIN    := build/pixel_test.bin
+GSU_DEMO   := build/gsu_demo.bin
+GSU_SCALER := build/sprite_scaler.bin
+FONT       := build/font.bin
 
 .PHONY: all clean
 
@@ -26,7 +27,10 @@ $(GSU_BIN): pixel_test.gsu | build
 $(GSU_DEMO): gsu_demo.gsu | build
 	$(BASS) -strict -o $@ $<
 
-$(OBJ): test_rom.65816 test_rom.h $(GSU_BIN) $(GSU_DEMO) $(FONT) | build
+$(GSU_SCALER): sprite_scaler.gsu | build
+	$(BASS) -strict -o $@ $<
+
+$(OBJ): test_rom.65816 test_rom.h $(GSU_BIN) $(GSU_DEMO) $(GSU_SCALER) $(FONT) | build
 	$(ASM) -o $< $@
 
 $(ROM): $(OBJ) linkfile.lnk inject_signatures.py

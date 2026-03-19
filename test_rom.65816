@@ -875,11 +875,12 @@ _gsuClear:
     dex
     bpl _gsuClear
 
-    ; Copy pixel_test to $70:0100
+    ; Copy pixel_test to $70:0200 (different base than demo at $70:0100
+    ; so CACHE instruction naturally invalidates between programs)
     ldx #PixelTestBinEnd - PixelTestBin - 1
 _gsuCopy:
     lda.w PixelTestBin,x
-    sta.l $700100,x
+    sta.l $700200,x
     dex
     bpl _gsuCopy
 
@@ -895,10 +896,10 @@ _gsuCopy:
     lda #$2D
     sta.l $303A                 ; SCMR: 16-color OBJ, RAN
 
-    ; Start GSU
+    ; Start GSU: R15=$0200 (pixel test at $70:0200)
     lda #$00
     sta.l $301E                 ; R15 low
-    lda #$01
+    lda #$02
     sta.l $301F                 ; R15 high -> GO
 
     ; Poll SFR.GO
@@ -1219,6 +1220,10 @@ PixelTestBinEnd:
 GsuDemoBin:
     .incbin "build/gsu_demo.bin"
 GsuDemoBinEnd:
+
+GsuScalerBin:
+    .incbin "build/sprite_scaler.bin"
+GsuScalerBinEnd:
 
 .ends
 
